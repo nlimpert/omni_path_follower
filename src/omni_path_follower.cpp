@@ -81,15 +81,12 @@ namespace omni_path_follower
     costmap_ros_->getRobotPose(robot_pose);
     robot_pose_ = PoseSE2(robot_pose);
 
-    // Get robot velocity
-
     // prune global plan to cut off parts of the past (spatially before the robot)
     pruneGlobalPlan(*tfl_, robot_pose, global_plan_);
 
     // Transform global plan to the frame of interest (w.r.t. the local costmap)
     std::vector<geometry_msgs::PoseStamped> transformed_plan;
-    int goal_idx;
-    tf::StampedTransform tf_plan_to_global;
+
     if(!base_local_planner::transformGlobalPlan(*tfl_, global_plan_, robot_pose, *costmap_ros_->getCostmap(), costmap_ros_->getGlobalFrameID(), transformed_plan))
     {
       ROS_WARN("Could not transform the global plan to the frame of the controller");
@@ -100,7 +97,7 @@ namespace omni_path_follower
     tf::poseStampedMsgToTF(transformed_plan.back(), global_goal);
     double dx = global_goal.getOrigin().getX() - robot_pose_.x();
     double dy = global_goal.getOrigin().getY() - robot_pose_.y();
-    double delta_orient = g2o::normalize_theta( tf::getYaw(global_goal.getRotation()) - robot_pose_.theta() );
+    double delta_orient = g2o::normalize_theta( tf::getYaw(global_goal.getRotation()) - robot_pose_.theta());
 
     bool xy_tolerance_reached = fabs(std::sqrt(dx*dx+dy*dy)) < goal_threshold_linear_;
     bool ori_tolerance_reached = fabs(delta_orient) < goal_threshold_angular_;
@@ -120,50 +117,13 @@ namespace omni_path_follower
     robot_goal_.x() = goal_point.getOrigin().getX();
     robot_goal_.y() = goal_point.getOrigin().getY();
 
-    // Setup potential field method
-    unsigned int width = costmap_ros_->getCostmap()->getSizeInCellsX();
-    unsigned int height = costmap_ros_->getCostmap()->getSizeInCellsY();
-    double cur_world_x = 0.0;
-    double cur_world_y = 0.0;
-    double cur_robot_x = robot_pose.getOrigin().x();
-    double cur_robot_y = robot_pose.getOrigin().y();
-    float cur_min_dist = 100000.0;
-
     double robot_ori = tf::getYaw(robot_pose.getRotation());
 
     Eigen::Vector2d vec_goalrobot(robot_goal_.x() - robot_pose.getOrigin().getX(),
                                   robot_goal_.y() - robot_pose.getOrigin().getY());
 
-    float rep_x = 0.0, rep_y = 0.0;
-    float rep_phi = 0.0;
-
     float att_x = 0., att_y = 0.;
     float att_phi = 0.0;
-
-    for (int posX = 0; posX < width; ++posX) {
-      for (int posY = 0; posY < height; ++posY) {
-        costmap_ros_->getCostmap()->mapToWorld(posX, posY, cur_world_x, cur_world_y);
-        if (costmap_ros_->getCostmap()->getCost(posX, posY) != costmap_2d::FREE_SPACE) {
-          double dx = cur_world_x - cur_robot_x;
-          double dy = cur_world_y - cur_robot_y;
-
-          if (fabs(dx) >= 0.01 && fabs(dy) >= 0.01) {
-            //Assign a lower factor for objects at larger distances
-            float factor = 1.f / ( (dx*dx + dy*dy) * (dx*dx + dy*dy) );
-
-            float d = sqrt( dx * dx + dy * dy );
-            if (d < cur_min_dist) {
-                cur_min_dist = d;
-            }
-
-            // add current obstacle as an repelling point to target
-            rep_x -= factor * dx;
-            rep_y -= factor * dy;
-          }
-        }
-      }
-    }
-    rep_phi = angles::normalize_angle(atan2(rep_y, rep_x) - robot_ori);
 
     // add current goal as an attraction point to target
     att_x = vec_goalrobot[0];
@@ -175,26 +135,10 @@ namespace omni_path_follower
         fabs(robot_goal_.x() - global_plan_.back().pose.position.x) < 0.000001 &&
         fabs(robot_goal_.y() - global_plan_.back().pose.position.y) < 0.000001;
 
-    if (fabs(cur_min_dist) < 1.0 && last_waypoint_selected_ == false) {
-      rep_x *= obstacle_k_;
-      rep_y *= obstacle_k_;
-    } else {
-      rep_x = 0.;
-      rep_y = 0.;
-    }
-
-    att_x *= goal_k_;
-    att_y *= goal_k_;
-
     float target_vel_x = 0.;
     float target_vel_y = 0.;
 
     float cur_max_vel = max_vel_lin_;
-
-    if (fabs(cur_min_dist) < pot_min_dist_) {
-      // consider a minimum feasible velocity
-      cur_max_vel = std::max(0.1, cur_max_vel / 2.0);
-    }
 
     // is the currently selected goal the goal of the global path?
     if (last_waypoint_selected_) {
@@ -213,7 +157,7 @@ namespace omni_path_follower
     if (fabs(dx) < rot_to_goal_pose_dist_ && fabs(dy) < rot_to_goal_pose_dist_) {
       target_ori = angles::shortest_angular_distance(robot_ori,tf::getYaw(global_goal.getRotation()));
     } else {
-      target_ori = angles::normalize_angle(goal_phi + rotate_from_obstacles_k_ * rep_phi);
+      target_ori = goal_phi;
     }
 
     float drive_x = vec_goalrobot[0];
@@ -236,12 +180,12 @@ namespace omni_path_follower
           (target_vel_.angular.z / fabs(target_vel_.angular.z));
     }
 
-    float weight_ang = fabs(target_vel_.angular.z) / max_vel_theta_;
-    ROS_INFO_THROTTLE(2, "weight_ang: %f", weight_ang);
+//    float weight_ang = fabs(target_vel_.angular.z) / max_vel_theta_;
+//    ROS_INFO_THROTTLE(2, "weight_ang: %f", weight_ang);
 
-    ROS_INFO_THROTTLE(2, "pre:\tx: %f y: %f",
-                      target_vel_.linear.x,
-                      target_vel_.linear.y);
+//    ROS_INFO_THROTTLE(2, "pre:\tx: %f y: %f",
+//                      target_vel_.linear.x,
+//                      target_vel_.linear.y);
 
     cmd_vel.linear.x = calculate_translation(last_vel_.linear.x, target_vel_.linear.x);
     cmd_vel.linear.y = calculate_translation(last_vel_.linear.y, target_vel_.linear.y);
@@ -252,83 +196,28 @@ namespace omni_path_follower
     last_vel_.angular.z = cmd_vel.angular.z;
 
     if (visualize_ == true) {
-      visualization_msgs::Marker rep_marker, att_marker, result_marker_vel;
+      visualization_msgs::Marker goal_marker, att_marker, result_marker_vel;
       visualization_msgs::MarkerArray markers;
 
       // add repelling marker
-      rep_marker.header.frame_id = "/base_link";
-      rep_marker.header.stamp = ros::Time::now();
+      goal_marker.header.frame_id = "/base_link";
+      goal_marker.header.stamp = ros::Time::now();
 
-      rep_marker.type = visualization_msgs::Marker::ARROW;
-      rep_marker.action = visualization_msgs::Marker::ADD;
-      rep_marker.scale.x = 0.1;
-      rep_marker.scale.y = 0.1;
-      rep_marker.scale.z = 0.1;
-      rep_marker.color.a = 0.5;
-      geometry_msgs::Point cur_point;
-      rep_marker.id = 0;
-      rep_marker.color.r = 1.0;
-      rep_marker.color.g = 0.0;
-      rep_marker.color.b = 0.0;
+      goal_marker.type = visualization_msgs::Marker::CYLINDER;
+      goal_marker.action = visualization_msgs::Marker::ADD;
+      goal_marker.scale.x = 0.1;
+      goal_marker.scale.y = 0.1;
+      goal_marker.scale.z = 0.3;
+      goal_marker.color.a = 0.5;
+      goal_marker.id = 0;
+      goal_marker.color.r = 1.0;
+      goal_marker.color.g = 0.0;
+      goal_marker.color.b = 0.0;
 
-      cur_point.x = 0.0;
-      cur_point.y = 0.0;
-      rep_marker.points.push_back(cur_point);
-      cur_point.x = std::cos( rep_phi ) * 5.0;
-      cur_point.y = std::sin( rep_phi ) * 5.0;
-      rep_marker.points.push_back(cur_point);
+      goal_marker.pose.position.x = robot_goal_.x();
+      goal_marker.pose.position.y = robot_goal_.y();
 
-      markers.markers.push_back(rep_marker);
-
-      // add attractive marker
-      att_marker.header.frame_id = "/map";
-      att_marker.header.stamp = ros::Time::now();
-
-      att_marker.type = visualization_msgs::Marker::ARROW;
-      att_marker.action = visualization_msgs::Marker::ADD;
-      att_marker.scale.x = 0.1;
-      att_marker.scale.y = 0.1;
-      att_marker.scale.z = 0.1;
-      att_marker.color.a = 0.5;
-
-      att_marker.id = 1;
-      att_marker.color.r = 0.0;
-      att_marker.color.g = 1.0;
-      att_marker.color.b = 0.0;
-
-      cur_point.x = robot_pose_.x();
-      cur_point.y = robot_pose_.y();
-      att_marker.points.push_back(cur_point);
-      cur_point.x = robot_goal_.x();
-      cur_point.y = robot_goal_.y();
-      att_marker.points.push_back(cur_point);
-
-      markers.markers.push_back(att_marker);
-
-      // add result marker
-      result_marker_vel.header.frame_id = "/base_link";
-      result_marker_vel.header.stamp = ros::Time::now();
-
-      result_marker_vel.type = visualization_msgs::Marker::ARROW;
-      result_marker_vel.action = visualization_msgs::Marker::ADD;
-      result_marker_vel.scale.x = 0.1;
-      result_marker_vel.scale.y = 0.1;
-      result_marker_vel.scale.z = 0.1;
-      result_marker_vel.color.a = 1;
-
-      result_marker_vel.id = 2;
-      result_marker_vel.color.r = 0.0;
-      result_marker_vel.color.g = 0.0;
-      result_marker_vel.color.b = 1.0;
-
-      cur_point.x = 0.0;
-      cur_point.y = 0.0;
-      result_marker_vel.points.push_back(cur_point);
-      cur_point.x = target_vel_.linear.x;
-      cur_point.y = target_vel_.linear.y;
-      result_marker_vel.points.push_back(cur_point);
-
-      markers.markers.push_back(result_marker_vel);
+      markers.markers.push_back(goal_marker);
 
       marker_pub.publish(markers);
     }
