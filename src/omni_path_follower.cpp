@@ -16,21 +16,6 @@ namespace omni_path_follower
     loop_time_ = 1 / controller_frequency;
    }
 
-//  bool PathFollower::posesEqual(geometry_msgs::PoseStamped first, geometry_msgs::PoseStamped second)
-//  {
-//    //    first.pose.position - second.pose.position;
-//    if(fabs(first.pose.position.x - second.pose.position.x) < EPSILON &&
-//       fabs(first.pose.position.y - second.pose.position.y) < EPSILON &&
-//       fabs(first.pose.position.z - second.pose.position.z) < EPSILON &&
-//       fabs(first.pose.orientation.x - second.pose.orientation.x) < EPSILON &&
-//       fabs(first.pose.orientation.y - second.pose.orientation.y) < EPSILON &&
-//       fabs(first.pose.orientation.z - second.pose.orientation.z) < EPSILON &&
-//       fabs(first.pose.orientation.w - second.pose.orientation.w) < EPSILON)
-//      return true;
-
-//    return false;
-//  }
-
   void PathFollower::initialize(std::string name, tf::TransformListener *tf, costmap_2d::Costmap2DROS *costmap_ros)
   {
     tfl_ = tf;
@@ -97,11 +82,6 @@ namespace omni_path_follower
     robot_pose_ = PoseSE2(robot_pose);
 
     // Get robot velocity
-//    tf::Stamped<tf::Pose> robot_vel_tf;
-//    odom_helper_.getRobotVel(robot_vel_tf);
-//    robot_vel_.linear.x = robot_vel_tf.getOrigin().getX();
-//    robot_vel_.linear.y = robot_vel_tf.getOrigin().getY();
-//    robot_vel_.angular.z = tf::getYaw(robot_vel_tf.getRotation());
 
     // prune global plan to cut off parts of the past (spatially before the robot)
     pruneGlobalPlan(*tfl_, robot_pose, global_plan_);
@@ -111,8 +91,6 @@ namespace omni_path_follower
     int goal_idx;
     tf::StampedTransform tf_plan_to_global;
     if(!base_local_planner::transformGlobalPlan(*tfl_, global_plan_, robot_pose, *costmap_ros_->getCostmap(), costmap_ros_->getGlobalFrameID(), transformed_plan))
-//    if (!transformGlobalPlan(*tfl_, global_plan_, robot_pose, *costmap_ros_->getCostmap(), global_frame_, lookahead_distance_,
-//                             transformed_plan, &goal_idx, &tf_plan_to_global))
     {
       ROS_WARN("Could not transform the global plan to the frame of the controller");
       return false;
@@ -120,7 +98,6 @@ namespace omni_path_follower
     // check if global goal is reached
     tf::Stamped<tf::Pose> global_goal;
     tf::poseStampedMsgToTF(transformed_plan.back(), global_goal);
-//    global_goal.setData( tf_plan_to_global * global_goal );
     double dx = global_goal.getOrigin().getX() - robot_pose_.x();
     double dy = global_goal.getOrigin().getY() - robot_pose_.y();
     double delta_orient = g2o::normalize_theta( tf::getYaw(global_goal.getRotation()) - robot_pose_.theta() );
@@ -128,7 +105,6 @@ namespace omni_path_follower
     bool xy_tolerance_reached = fabs(std::sqrt(dx*dx+dy*dy)) < goal_threshold_linear_;
     bool ori_tolerance_reached = fabs(delta_orient) < goal_threshold_angular_;
 
-//    ROS_INFO("goal: %u %u", xy_tolerance_reached ? 1 : 0, ori_tolerance_reached ? 1 : 0);
     if(xy_tolerance_reached && ori_tolerance_reached)
     {
       ROS_INFO_NAMED("omni_path_follower", "GOAL Reached!");
@@ -141,7 +117,6 @@ namespace omni_path_follower
     tf::poseStampedMsgToTF(transformed_plan.back(), goal_point);
     tf::poseStampedMsgToTF(global_plan_.back(), goal_point_2);
 
-//    ROS_INFO("goal %f %f\tgoal2 %f %f", goal_point.getOrigin().getX(), goal_point.getOrigin().getY(), goal_point_2.getOrigin().getX(), goal_point_2.getOrigin().getY());
     robot_goal_.x() = goal_point.getOrigin().getX();
     robot_goal_.y() = goal_point.getOrigin().getY();
 
@@ -153,8 +128,6 @@ namespace omni_path_follower
     double cur_robot_x = robot_pose.getOrigin().x();
     double cur_robot_y = robot_pose.getOrigin().y();
     float cur_min_dist = 100000.0;
-//    float cur_min_x = 0.;
-//    float cur_min_y = 0.;
 
     double robot_ori = tf::getYaw(robot_pose.getRotation());
 
@@ -181,8 +154,6 @@ namespace omni_path_follower
             float d = sqrt( dx * dx + dy * dy );
             if (d < cur_min_dist) {
                 cur_min_dist = d;
-//                cur_min_x = dx;
-//                cur_min_y = dy;
             }
 
             // add current obstacle as an repelling point to target
@@ -205,16 +176,9 @@ namespace omni_path_follower
         fabs(robot_goal_.y() - global_plan_.back().pose.position.y) < 0.000001;
 
     if (fabs(cur_min_dist) < 1.0 && last_waypoint_selected_ == false) {
-//      float factor = std::min(1. / fabs(cur_min_dist - 0.3), 0.5);
-//      ROS_INFO("factor: %f", factor);
       rep_x *= obstacle_k_;
       rep_y *= obstacle_k_;
-//      rep_x *= factor;
-//      rep_y *= factor;
-//      cmd_vel.linear.x += drive_part_x * factor;
-//      cmd_vel.linear.y += drive_part_y * factor;
     } else {
-//      ROS_WARN("TOO FAR FROM OBSTACLES - IGNORING REP");
       rep_x = 0.;
       rep_y = 0.;
     }
@@ -234,17 +198,12 @@ namespace omni_path_follower
 
     // is the currently selected goal the goal of the global path?
     if (last_waypoint_selected_) {
-//      ROS_WARN("LAST WAYPOINT SELECTED!");
       target_vel_x = fabs(dx) > 0.5 ? 0.5 : std::max(fabs(dx), max_vel_lin_at_goal_);
       target_vel_y = fabs(dy) > 0.5 ? 0.5 : std::max(fabs(dy), max_vel_lin_at_goal_);
-//      rep_x *= cutoff_factor_at_goal_;
-//      rep_y *= cutoff_factor_at_goal_;
     } else {
       target_vel_x = cur_max_vel;
       target_vel_y = cur_max_vel;
     }
-
-//    ROS_INFO("rep_phi: %f\tatt_phi: %f", rep_phi, att_phi);
 
     double goal_phi = angles::shortest_angular_distance(robot_ori, atan2(vec_goalrobot[1], vec_goalrobot[0]));
 
@@ -253,58 +212,19 @@ namespace omni_path_follower
     // rotate to goal pose when we are getting close
     if (fabs(dx) < rot_to_goal_pose_dist_ && fabs(dy) < rot_to_goal_pose_dist_) {
       target_ori = angles::shortest_angular_distance(robot_ori,tf::getYaw(global_goal.getRotation()));
-//      ROS_INFO("%u", __LINE__);
-
-//    } else if (true) {
-//      new_ori = target_phi;
     } else {
-//      ROS_INFO("%u", __LINE__);
       target_ori = angles::normalize_angle(goal_phi + rotate_from_obstacles_k_ * rep_phi);
     }
 
-//    ROS_INFO("att: %f %f rep: %f %f", att_x, att_y, rep_x, rep_y);
-//    float drive_x = att_x + rep_x;
-//    float drive_y = att_y + rep_y;
     float drive_x = vec_goalrobot[0];
     float drive_y = vec_goalrobot[1];
     float drive_phi = angles::normalize_angle(atan2(drive_y, drive_x) - robot_ori - target_ori * ang_trans_k_);
-//    float drive_phi = angles::normalize_angle(target_ori - robot_ori);
 
     float drive_part_x = 0.f;
     float drive_part_y = 0.f;
 
     drive_part_x = std::cos( drive_phi );
     drive_part_y = std::sin( drive_phi );
-
-//    double d_phi = angles::shortest_angular_distance(rep_phi, goal_phi);
-
-//    ROS_INFO("vec_nextrob: %f\t%f", vec_nextrob[0], vec_nextrob[1]);
-//    ROS_INFO("goal_phi: %f", goal_phi);
-//    ROS_INFO("target_phi: %f", target_phi);
-//    ROS_INFO("d_phi: %f min_dist: %f", d_phi, cur_min_dist);
-//    ROS_INFO("proposed: %f\t%f", drive_part_x * 0.2, drive_part_y * 0.2);
-//    ROS_INFO("");
-
-    //rotate velocity into robot frame
-
-
-
-//    float vel_x = fabs(dx) > 0.5 ? 0.5 : std::max(fabs(dx), 0.1);
-//    float vel_y = fabs(dy) > 0.5 ? 0.5 : std::max(fabs(dy), 0.1);
-
-//    ROS_INFO("vel: %f %f", vel_x, vel_y);
-//    ROS_INFO("d: %f %f", dx, dy);
-
-
-//    cmd_vel.linear.x = cos(goal_phi) * vel_x;
-//    cmd_vel.linear.y = sin(goal_phi) * vel_y;
-
-//    if (fabs(cur_min_dist) < 0.5 && last_waypoint_selected_ == false) {
-//      float factor = std::min(1. / fabs(cur_min_dist - 0.3), 0.5);
-//      ROS_INFO("factor: %f", factor);
-//      cmd_vel.linear.x += drive_part_x * factor;
-//      cmd_vel.linear.y += drive_part_y * factor;
-//    }
 
     target_vel_.linear.x = drive_part_x * target_vel_x;
     target_vel_.linear.y = drive_part_y * target_vel_y;
@@ -316,90 +236,6 @@ namespace omni_path_follower
           (target_vel_.angular.z / fabs(target_vel_.angular.z));
     }
 
-//    double lin_overshoot = sqrt(target_vel_.linear.x * target_vel_.linear.x + target_vel_.linear.y * target_vel_.linear.y) / max_vel_lin_;
-//    double lin_undershoot = min_vel_lin_ / sqrt(target_vel_.linear.x * target_vel_.linear.x + target_vel_.linear.y * target_vel_.linear.y);
-//    if (lin_overshoot > 1.0) {
-//      target_vel_.linear.x /= lin_overshoot;
-//      target_vel_.linear.y /= lin_overshoot;
-//    }
-
-//    if(lin_undershoot > 1.0) {
-//      target_vel_.linear.x *= lin_undershoot;
-//      target_vel_.linear.y *= lin_undershoot;
-//    }
-
-//    if (xy_tolerance_reached == true) {
-//      target_vel_.linear.x = 0.0;
-//      target_vel_.linear.y = 0.0;
-//    }
-//    if (ori_tolerance_reached == true) {
-//      target_vel_.angular.z = 0.0;
-//    }
-
-
-//    ROS_INFO("d: %f\t%f\t%f", d_vel_lin_x, d_vel_lin_y, d_vel_theta);
-
-//    // consider acceleration limits
-//    if (fabs(d_vel_lin_x) > acc_lim_lin_ * loop_time_) {
-//      cmd_vel.linear.x = last_robot_vel_.linear.x + (acc_lim_lin_ * loop_time_ * sign(d_vel_lin_x));
-//    } else {
-//      cmd_vel.linear.x = new_robot_vel_.linear.x;
-//    }
-//    if (fabs(d_vel_lin_y) > acc_lim_lin_ * loop_time_) {
-//      cmd_vel.linear.y = last_robot_vel_.linear.y + (acc_lim_lin_ * loop_time_ * sign(d_vel_lin_y));
-//    } else {
-//      cmd_vel.linear.y = new_robot_vel_.linear.y;
-//    }
-
-//    if (fabs(d_vel_theta) > acc_lim_theta_ * loop_time_) {
-//      cmd_vel.angular.z = last_robot_vel_.angular.z + (acc_lim_theta_ * loop_time_ * sign(d_vel_theta));
-//    } else {
-//      cmd_vel.angular.z = new_robot_vel_.angular.z;
-//    }
-
-//    last_robot_vel_.linear.x = cmd_vel.linear.x;
-//    last_robot_vel_.linear.y = cmd_vel.linear.y;
-//    last_robot_vel_.angular.z = cmd_vel.angular.z;
-
-//    float d_v_x     = target_vel_.linear.x  - last_vel_.linear.x;
-//    float d_v_y     = target_vel_.linear.y  - last_vel_.linear.y;
-//    float d_v_theta = target_vel_.angular.z - last_vel_.angular.z;
-
-//    new_robot_vel_.linear.x = drive_part_x * target_vel_x;
-//    new_robot_vel_.linear.y = drive_part_y * target_vel_y;
-//    new_robot_vel_.angular.z = angle_k_ * target_ori;
-
-    // limit twist message for velocity bounds
-
-//    //// ## Taken from ros navigation_exerimental's pose_follower
-//    geometry_msgs::Twist d_vel;
-//    d_vel.linear.x = new_robot_vel_.linear.x - last_vel_.linear.x;
-//    d_vel.linear.y = new_robot_vel_.linear.y - last_vel_.linear.y;
-//    d_vel.angular.z = new_robot_vel_.angular.z - last_vel_.angular.z;
-
-//    double lin_overshoot = sqrt(d_vel.linear.x * d_vel.linear.x + d_vel.linear.y * d_vel.linear.y) / max_vel_lin_;
-//    double lin_undershoot = min_vel_lin_ / sqrt(d_vel.linear.x * d_vel.linear.x + d_vel.linear.y * d_vel.linear.y);
-//    if (lin_overshoot > 1.0)
-//    {
-//      d_vel.linear.x /= lin_overshoot;
-//      d_vel.linear.y /= lin_overshoot;
-//    }
-
-//    if(lin_undershoot > 1.0)
-//    {
-//      d_vel.linear.x *= lin_undershoot;
-//      d_vel.linear.y *= lin_undershoot;
-//    }
-
-//    if (fabs(d_vel.angular.z) > max_vel_theta_) d_vel.angular.z = max_vel_theta_ * sign(d_vel.angular.z);
-//    if (fabs(d_vel.angular.z) < min_vel_theta_) d_vel.angular.z = min_vel_theta_ * sign(d_vel.angular.z);
-
-//    cmd_vel = d_vel;
-//    //// #
-
-
-//    ROS_INFO("X");
-
     float weight_ang = fabs(target_vel_.angular.z) / max_vel_theta_;
     ROS_INFO_THROTTLE(2, "weight_ang: %f", weight_ang);
 
@@ -407,33 +243,13 @@ namespace omni_path_follower
                       target_vel_.linear.x,
                       target_vel_.linear.y);
 
-//    target_vel_.linear.x += cos(target_ori) * ang_trans_k_ * weight_ang;
     cmd_vel.linear.x = calculate_translation(last_vel_.linear.x, target_vel_.linear.x);
-
-//    ROS_INFO("Y");
-//    target_vel_.linear.y += -sin(target_ori) * ang_trans_k_  * weight_ang;
     cmd_vel.linear.y = calculate_translation(last_vel_.linear.y, target_vel_.linear.y);
-
-//    ROS_INFO("ang_Z");
     cmd_vel.angular.z = calculate_rotation(last_vel_.angular.z, target_vel_.angular.z);
-
-    ROS_INFO_THROTTLE(2, "post:\tx: %f y: %f",
-                      target_vel_.linear.x,
-                      target_vel_.linear.y);
-
-    ROS_INFO_THROTTLE(2, "ang:\t%f cos: %f sin: %f",
-                      cmd_vel.angular.z,
-                      cos(cmd_vel.angular.z),
-                      sin(cmd_vel.angular.z));
-
-
-
-//    ROS_INFO("DONE CALCULATE_TRANSLATION");
 
     last_vel_.linear.x = cmd_vel.linear.x;
     last_vel_.linear.y = cmd_vel.linear.y;
     last_vel_.angular.z = cmd_vel.angular.z;
-
 
     if (visualize_ == true) {
       visualization_msgs::Marker rep_marker, att_marker, result_marker_vel;
@@ -514,239 +330,11 @@ namespace omni_path_follower
 
       markers.markers.push_back(result_marker_vel);
 
-//      goal_marker.header.frame_id = "/map";
-//      goal_marker.header.stamp = ros::Time::now();
-
-//      goal_marker.type = visualization_msgs::Marker::ARROW;
-//      goal_marker.action = visualization_msgs::Marker::ADD;
-//      goal_marker.scale.x = 0.1;
-//      goal_marker.scale.y = 0.1;
-//      goal_marker.scale.z = 0.1;
-//      goal_marker.color.a = 1.0; // Don't forget to set the alpha!
-
-//      goal_marker.id = 2;
-//      goal_marker.color.r = 0.0;
-//      goal_marker.color.g = 0.0;
-//      goal_marker.color.b = 1.0;
-
-//      cur_point.x = robot_goal_.x();
-//      cur_point.y = robot_goal_.y();
-//      goal_marker.points.push_back(cur_point);
-
-//      float cur_ori = 0.;
-//      if (fabs(dx) < rot_to_goal_pose_dist_ && fabs(dy) < rot_to_goal_pose_dist_) {
-//        cur_ori = tf::getYaw(global_goal.getRotation());
-//      } else {
-//        cur_ori = angles::normalize_angle(goal_phi + rotate_from_obstacles_k_ * rep_phi);
-//      }
-//      cur_point.x = robot_goal_.x() + std::cos( cur_ori );
-//      cur_point.y = robot_goal_.y() + std::sin( cur_ori );
-//      goal_marker.points.push_back(cur_point);
-
-//      markers.markers.push_back(goal_marker);
-
       marker_pub.publish(markers);
     }
 
-
-    // TODO: Reached goal
-//    if(fabs(std::sqrt(dx*dx+dy*dy)) < cfg_.goal_tolerance.xy_goal_tolerance
-//      && fabs(delta_orient) < cfg_.goal_tolerance.yaw_goal_tolerance)
-//    {
-//      goal_reached_ = true;
-//      return true;
-//    }
-
-//    Eigen::Vector2d vec_nextrob(robot_pose.getOrigin().getX() - next_waypoint_.position.x,
-//                                robot_pose.getOrigin().getY() - next_waypoint_.position.y);
-
-//    double robot_angle = tf::getYaw(robot_pose.getRotation());
-//    double path_angle = atan2(vec_lastnext[1],vec_lastnext[0]);
-//    double delta_angle = angles::shortest_angular_distance(path_angle,robot_angle);
-
-//    double len_lastnext = vec_lastnext.norm();
-
-
-
-//    ROS_INFO("desired: %f\t%f", vec_nextrob[0], vec_nextrob[1]);
-//    ROS_INFO("target:  %f\t%f", target_x, target_y);
-
-//    //shortest distance from robot to path
-//    double cross = vec_lastnext[0]*vec_lastrob[1] - vec_lastnext[1]*vec_lastrob[0];
-//    double to_path_dist = cross/len_lastnext;   //TODO norm = 0?!
-
-//    //distance along path between last and next waypoint
-//    double along_path_dist = len_lastnext - vec_lastnext.dot(vec_lastrob)/len_lastnext;
-
-//    double to_path_vel = - to_path_k_ * to_path_dist;
-//    double in_path_vel = in_path_vel_;
-
-//    //if we are in the last path segment, slow down
-//    if(path_index_ == (path_length_ - 2))
-//    {
-//      in_path_vel = in_path_vel_ / len_lastnext * along_path_dist;
-
-//      double path_dist = hypot(to_path_dist, along_path_dist);
-
-//      if(path_dist < goal_threshold_)
-//      {
-//        cmd_vel = zero_vel;
-//        goal_reached_ = true;
-//        return true;
-//      }
-//    }
-
-//    //rotate velocity into robot frame
-//    cmd_vel.linear.x = cos(delta_angle)*in_path_vel + sin(delta_angle)*to_path_vel;
-//    cmd_vel.linear.y = -sin(delta_angle)*in_path_vel + cos(delta_angle)*to_path_vel;
-//    cmd_vel.angular.z = -angle_k_ * delta_angle;
-
-//    //check if we need to switch to the next path segment
-//    double dot = (-1*vec_lastnext).dot(vec_nextrob);
-//    if(dot < 0 && path_index_ < (path_length_ - 2))
-//    {
-//      ROS_DEBUG("path_follower: next waypoint");
-//      path_index_ += 1;
-//      last_waypoint_ = global_plan_.at(path_index_).pose;
-//      next_waypoint_ = global_plan_.at(path_index_+1).pose;
-//    }
-
     return true;
   }
-
-/*
-  bool PathFollower::transformGlobalPlan(const tf::TransformListener& tf, const std::vector<geometry_msgs::PoseStamped>& global_plan,
-                    const tf::Stamped<tf::Pose>& global_pose, const costmap_2d::Costmap2D& costmap, const std::string& global_frame, double max_plan_length,
-                    std::vector<geometry_msgs::PoseStamped>& transformed_plan, int* current_goal_idx, tf::StampedTransform* tf_plan_to_global) const
-  {
-    // this method is a slightly modified version of base_local_planner/goal_functions.h
-
-    const geometry_msgs::PoseStamped& plan_pose = global_plan[0];
-
-    transformed_plan.clear();
-
-    try
-    {
-      if (global_plan.empty())
-      {
-        ROS_ERROR("Received plan with zero length");
-        *current_goal_idx = 0;
-        return false;
-      }
-
-      // get plan_to_global_transform from plan frame to global_frame
-      tf::StampedTransform plan_to_global_transform;
-      tf.waitForTransform(global_frame, ros::Time::now(),
-      plan_pose.header.frame_id, plan_pose.header.stamp,
-      plan_pose.header.frame_id, ros::Duration(0.5));
-      tf.lookupTransform(global_frame, ros::Time(),
-      plan_pose.header.frame_id, plan_pose.header.stamp,
-      plan_pose.header.frame_id, plan_to_global_transform);
-
-      //let's get the pose of the robot in the frame of the plan
-      tf::Stamped<tf::Pose> robot_pose;
-      tf.transformPose(plan_pose.header.frame_id, global_pose, robot_pose);
-
-      //we'll discard points on the plan that are outside the local costmap
-      double dist_threshold = std::max(costmap.getSizeInCellsX() * costmap.getResolution() / 2.0,
-                                       costmap.getSizeInCellsY() * costmap.getResolution() / 2.0);
-      dist_threshold *= 0.85; // just consider 85% of the costmap size to better incorporate point obstacle that are
-                             // located on the border of the local costmap
-
-
-      int i = 0;
-      double sq_dist_threshold = dist_threshold * dist_threshold;
-      double sq_dist = 1e10;
-
-      //we need to loop to a point on the plan that is within a certain distance of the robot
-      while(i < (int)global_plan.size())
-      {
-        double x_diff = robot_pose.getOrigin().x() - global_plan[i].pose.position.x;
-        double y_diff = robot_pose.getOrigin().y() - global_plan[i].pose.position.y;
-        double new_sq_dist = x_diff * x_diff + y_diff * y_diff;
-        if (new_sq_dist > sq_dist && sq_dist < sq_dist_threshold) // find first distance that is greater
-        {
-          sq_dist = new_sq_dist;
-          break;
-        }
-        sq_dist = new_sq_dist;
-        ++i;
-      }
-
-      tf::Stamped<tf::Pose> tf_pose;
-      geometry_msgs::PoseStamped newer_pose;
-
-      double plan_length = 0; // check cumulative Euclidean distance along the plan
-
-      //now we'll transform until points are outside of our distance threshold
-      while(i < (int)global_plan.size() && sq_dist <= sq_dist_threshold && (max_plan_length<=0 || plan_length <= max_plan_length))
-      {
-        const geometry_msgs::PoseStamped& pose = global_plan[i];
-        tf::poseStampedMsgToTF(pose, tf_pose);
-        tf_pose.setData(plan_to_global_transform * tf_pose);
-        tf_pose.stamp_ = plan_to_global_transform.stamp_;
-        tf_pose.frame_id_ = global_frame;
-        tf::poseStampedTFToMsg(tf_pose, newer_pose);
-
-        transformed_plan.push_back(newer_pose);
-
-        double x_diff = robot_pose.getOrigin().x() - global_plan[i].pose.position.x;
-        double y_diff = robot_pose.getOrigin().y() - global_plan[i].pose.position.y;
-        sq_dist = x_diff * x_diff + y_diff * y_diff;
-
-        // caclulate distance to previous pose
-        if (i>0 && max_plan_length>0)
-          plan_length += distance_points2d(global_plan[i-1].pose.position, global_plan[i].pose.position);
-
-        ++i;
-      }
-
-      // if we are really close to the goal (<sq_dist_threshold) and the goal is not yet reached (e.g. orientation error >>0)
-      // the resulting transformed plan can be empty. In that case we explicitly inject the global goal.
-      if (transformed_plan.empty())
-      {
-        tf::poseStampedMsgToTF(global_plan.back(), tf_pose);
-        tf_pose.setData(plan_to_global_transform * tf_pose);
-        tf_pose.stamp_ = plan_to_global_transform.stamp_;
-        tf_pose.frame_id_ = global_frame;
-        tf::poseStampedTFToMsg(tf_pose, newer_pose);
-
-        transformed_plan.push_back(newer_pose);
-
-        // Return the index of the current goal point (inside the distance threshold)
-        if (current_goal_idx) *current_goal_idx = int(global_plan.size())-1;
-      }
-      else
-      {
-        // Return the index of the current goal point (inside the distance threshold)
-        if (current_goal_idx) *current_goal_idx = i-1; // subtract 1, since i was increased once before leaving the loop
-      }
-
-      // Return the transformation from the global plan to the global planning frame if desired
-      if (tf_plan_to_global) *tf_plan_to_global = plan_to_global_transform;
-    }
-    catch(tf::LookupException& ex)
-    {
-      ROS_ERROR("No Transform available Error: %s\n", ex.what());
-      return false;
-    }
-    catch(tf::ConnectivityException& ex)
-    {
-      ROS_ERROR("Connectivity Error: %s\n", ex.what());
-      return false;
-    }
-    catch(tf::ExtrapolationException& ex)
-    {
-      ROS_ERROR("Extrapolation Error: %s\n", ex.what());
-      if (global_plan.size() > 0)
-        ROS_ERROR("Global Frame: %s Plan Frame size %d: %s\n", global_frame.c_str(), (unsigned int)global_plan.size(), global_plan[0].header.frame_id.c_str());
-
-      return false;
-    }
-
-*/
-//    return true;
-//  }
 
   bool PathFollower::pruneGlobalPlan(const tf::TransformListener& tf, const tf::Stamped<tf::Pose>& global_pose, std::vector<geometry_msgs::PoseStamped>& global_plan, double dist_behind_robot)
   {
@@ -801,8 +389,6 @@ namespace omni_path_follower
     max_vel_lin_at_goal_     = config.max_vel_lin_at_goal;
     max_vel_theta_           = config.max_vel_theta;
     min_vel_theta_           = config.min_vel_theta;
-//    k_trans_                 = config.k_trans;
-//    k_rot_                   = config.k_rot;
     lookahead_distance_      = config.lookahead_distance;
     acc_lim_lin_             = config.acc_lim_lin;
     acc_lim_theta_           = config.acc_lim_theta;
@@ -845,9 +431,6 @@ namespace omni_path_follower
     next_waypoint_ = global_plan_.at(path_index_ + 1).pose;
 
     goal_reached_ = false;
-//    last_robot_vel_.linear.x = 0.;
-//    last_robot_vel_.linear.y = 0.;
-//    last_robot_vel_.angular.z = 0.;
     return true;
   }
 
@@ -863,62 +446,38 @@ namespace omni_path_follower
   {
     float exec_trans = 0.0;
 
-//    ROS_INFO("call: %f %f %f %f %f", current, desired, acc_lin_inc_, acc_lin_dec_, loop_time_);
-
     if (desired < current) {
 
       if (current > 0.0) {
-        // decrease forward speed
-//        ROS_INFO("decrease\tforward\t%i", __LINE__);
-
         exec_trans = current - acc_lin_dec_;
         exec_trans = std::max( exec_trans, desired );
 
       } else if (current < 0.0) {
-        // increase backward speed
-//        ROS_INFO("%i", __LINE__);
-
         exec_trans = current - acc_lin_inc_;
         exec_trans = std::max( exec_trans, desired );
 
       }  else {
-        // current == 0;
-//        ROS_INFO("%i", __LINE__);
-
         exec_trans = std::max( -acc_lin_inc_, desired );
       }
 
     } else if (desired > current) {
 
       if (current > 0.0) {
-        // increase forward speed
-//        ROS_INFO("%i", __LINE__);
-
         exec_trans = current + acc_lin_inc_;
         exec_trans = std::min( exec_trans, desired );
 
       } else if (current < 0.0) {
-//        ROS_INFO("decrease\tbackward\t%i", __LINE__);
-        // decrease backward speed
-//        ROS_INFO("%i", __LINE__);
-
         exec_trans = current + acc_lin_dec_;
         exec_trans = std::min( exec_trans, desired );
 
       } else {
-        // current == 0
-//        ROS_INFO("%i", __LINE__);
-
         exec_trans = std::min( acc_lin_inc_, desired );
-//        ROS_INFO("acc_lin_inc_, desired: %f %f", acc_lin_inc_, desired);
       }
 
     } else {
-      // nothing to change!!!
+      // nothing to change
       exec_trans = desired;
     }
-
-//    ROS_INFO("return %f", exec_trans);
     return exec_trans;
   }
 
