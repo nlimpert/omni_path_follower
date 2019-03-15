@@ -69,27 +69,29 @@ public:
  bool pruneGlobalPlan(const tf::TransformListener& tf, const tf::Stamped<tf::Pose>& global_pose,
                       std::vector<geometry_msgs::PoseStamped>& global_plan, double dist_behind_robot=1);
 
- /**
-   * @brief  Transforms the global plan of the robot from the planner frame to the local frame (modified).
-   *
-   * The method replaces transformGlobalPlan as defined in base_local_planner/goal_functions.h
-   * such that the index of the current goal pose is returned as well as
-   * the transformation between the global plan and the planning frame.
-   * @param tf A reference to a transform listener
-   * @param global_plan The plan to be transformed
-   * @param global_pose The global pose of the robot
-   * @param costmap A reference to the costmap being used so the window size for transforming can be computed
-   * @param global_frame The frame to transform the plan to
-   * @param max_plan_length Specify maximum length (cumulative Euclidean distances) of the transformed plan [if <=0: disabled; the length is also bounded by the local costmap size!]
-   * @param[out] transformed_plan Populated with the transformed plan
-   * @param[out] current_goal_idx Index of the current (local) goal pose in the global plan
-   * @param[out] tf_plan_to_global Transformation between the global plan and the global planning frame
-   * @return \c true if the global plan is transformed, \c false otherwise
-   */
- bool transformGlobalPlan(const tf::TransformListener& tf, const std::vector<geometry_msgs::PoseStamped>& global_plan,
-                          const tf::Stamped<tf::Pose>& global_pose,  const costmap_2d::Costmap2D& costmap,
-                          const std::string& global_frame, double max_plan_length, std::vector<geometry_msgs::PoseStamped>& transformed_plan,
-                          int* current_goal_idx = NULL, tf::StampedTransform* tf_plan_to_global = NULL) const;
+// bool transformGlobalPlan(const tf::TransformListener& tf, const std::vector<geometry_msgs::PoseStamped>& global_plan,
+//           const costmap_2d::Costmap2DROS& costmap, const std::string& global_frame, std::vector<geometry_msgs::PoseStamped>& transformed_plan);
+// /**
+//   * @brief  Transforms the global plan of the robot from the planner frame to the local frame (modified).
+//   *
+//   * The method replaces transformGlobalPlan as defined in base_local_planner/goal_functions.h
+//   * such that the index of the current goal pose is returned as well as
+//   * the transformation between the global plan and the planning frame.
+//   * @param tf A reference to a transform listener
+//   * @param global_plan The plan to be transformed
+//   * @param global_pose The global pose of the robot
+//   * @param costmap A reference to the costmap being used so the window size for transforming can be computed
+//   * @param global_frame The frame to transform the plan to
+//   * @param max_plan_length Specify maximum length (cumulative Euclidean distances) of the transformed plan [if <=0: disabled; the length is also bounded by the local costmap size!]
+//   * @param[out] transformed_plan Populated with the transformed plan
+//   * @param[out] current_goal_idx Index of the current (local) goal pose in the global plan
+//   * @param[out] tf_plan_to_global Transformation between the global plan and the global planning frame
+//   * @return \c true if the global plan is transformed, \c false otherwise
+//   */
+// bool transformGlobalPlan(const tf::TransformListener& tf, const std::vector<geometry_msgs::PoseStamped>& global_plan,
+//                          const tf::Stamped<tf::Pose>& global_pose,  const costmap_2d::Costmap2D& costmap,
+//                          const std::string& global_frame, double max_plan_length, std::vector<geometry_msgs::PoseStamped>& transformed_plan,
+//                          int* current_goal_idx = NULL, tf::StampedTransform* tf_plan_to_global = NULL) const;
 
  void reconfigureCB(PathFollowerReconfigureConfig& config, uint32_t level);
 
@@ -101,16 +103,23 @@ private:
   double goal_threshold_linear_;
   double goal_threshold_angular_;
   double pot_min_dist_;
+  double min_vel_lin_;
   double max_vel_lin_;
+  double k_trans_;
+  double k_rot_;
   double max_vel_lin_at_goal_;
   double acc_lim_lin_;
   double acc_lim_theta_;
   double max_vel_theta_;
+  double min_vel_theta_;
   double rot_to_goal_pose_dist_;
   double rotate_from_obstacles_k_;
   double goal_k_;
   double obstacle_k_;
   double cutoff_factor_at_goal_;
+  double ang_trans_k_;
+
+  double lookahead_distance_;
 
   float acc_lin_inc_;
   float acc_lin_dec_;
