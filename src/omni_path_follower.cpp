@@ -43,12 +43,18 @@ namespace omni_path_follower
     nh.param("goal_threshold_angular", goal_threshold_angular_, 0.05);
     nh.param("lookahead_distance", lookahead_distance_, 1.0);
 
+    nh.param("num_th_samples", num_th_samples_, 20);
+    nh.param("num_x_samples", num_x_samples_, 10);
+    nh.param("theta_range", theta_range_, 0.7);
+
     global_frame_ = costmap_ros_->getGlobalFrameID();
 
     //initialize empty global plan
     std::vector<geometry_msgs::PoseStamped> empty_plan;
     empty_plan.push_back(geometry_msgs::PoseStamped());
     global_plan_ = empty_plan;
+
+    planner_.initialize("planner", tfl_, costmap_ros_);
 
     dynamic_recfg_ = boost::make_shared< dynamic_reconfigure::Server<PathFollowerReconfigureConfig> >(nh);
     dynamic_reconfigure::Server<PathFollowerReconfigureConfig>::CallbackType cb = boost::bind(&PathFollower::reconfigureCB, this, _1, _2);
@@ -174,18 +180,24 @@ namespace omni_path_follower
     target_vel_.linear.y = drive_part_y * target_vel_y;
     target_vel_.angular.z = angle_k_ * target_ori;
 
+    updateTrajectoryIfNeeded(target_vel_);
+
     // limit angular vel
     if (fabs(target_vel_.angular.z) > 0.00001 ) {
       target_vel_.angular.z = std::min(fabs(target_vel_.angular.z), max_vel_theta_) *
           (target_vel_.angular.z / fabs(target_vel_.angular.z));
     }
 
-//    float weight_ang = fabs(target_vel_.angular.z) / max_vel_theta_;
-//    ROS_INFO_THROTTLE(2, "weight_ang: %f", weight_ang);
-
-//    ROS_INFO_THROTTLE(2, "pre:\tx: %f y: %f",
-//                      target_vel_.linear.x,
-//                      target_vel_.linear.y);
+//    //first, we'll check the trajectory that the user sent in... if its legal... we'll just follow it
+//    if(checkTrajectory(desired_vel[0], desired_vel[1], desired_vel[2], true)){
+//      geometry_msgs::Twist cmd;
+//      cmd.linear.x = desired_vel[0];
+//      cmd.linear.y = desired_vel[1];
+//      cmd.angular.z = desired_vel[2];
+//      pub_.publish(cmd);
+//      r.sleep();
+//      continue;
+//    }
 
     cmd_vel.linear.x = calculate_translation(last_vel_.linear.x, target_vel_.linear.x);
     cmd_vel.linear.y = calculate_translation(last_vel_.linear.y, target_vel_.linear.y);
@@ -422,5 +434,84 @@ namespace omni_path_follower
 
     return exec_rot;
   }
+
+void PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
+{
+  // The following functionality is essentially taken from navigation_experimental/assisted_teleop
+
+  //first, we'll check the trajectory that the user sent in... if its legal... we'll just follow it
+  if(planner_.checkTrajectory(twist.linear.x, twist.linear.y, twist.angular.z, true)){
+    return;
+  }
+
+  Eigen::Vector3f desired_vel = Eigen::Vector3f::Zero();
+  desired_vel[0] = twist.linear.x;
+  desired_vel[1] = twist.linear.y;
+  desired_vel[2] = twist.angular.z;
+
+  double dth = (theta_range_) / double(num_th_samples_);
+  double dx = twist.linear.x / double(num_x_samples_);
+  double start_th = twist.angular.z - theta_range_ / 2.0 ;
+
+  Eigen::Vector3f best = Eigen::Vector3f::Zero();
+  double best_dist = DBL_MAX;
+  bool trajectory_found = false;
+
+  //if we don't have a valid trajectory... we'll start checking others in the angular range specified
+  for(int i = 0; i < num_x_samples_; ++i){
+    Eigen::Vector3f check_vel = Eigen::Vector3f::Zero();
+    check_vel[0] = desired_vel[0] - i * dx;
+    check_vel[1] = desired_vel[1];
+    check_vel[2] = start_th;
+    for(int j = 0; j < num_th_samples_; ++j){
+      check_vel[2] = start_th + j * dth;
+      if(planner_.checkTrajectory(check_vel[0], check_vel[1], check_vel[2], false)){
+        //if we have a legal trajectory, we'll score it based on its distance to our desired velocity
+        Eigen::Vector3f diffs = (desired_vel - check_vel);
+        double sq_dist = diffs[0] * diffs[0] + diffs[1] * diffs[1] + diffs[2] * diffs[2];
+
+        //if we have a trajectory that is better than our best one so far, we'll take it
+        if(sq_dist < best_dist){
+          best = check_vel;
+          best_dist = sq_dist;
+          trajectory_found = true;
+        }
+      }
+    }
+  }
+
+  //check if best is still zero, if it is... scale the original trajectory based on the collision_speed requested
+  //but we only need to do this if the user has set a non-zero collision speed
+  if(!trajectory_found && (collision_trans_speed_ > 0.0 || collision_rot_speed_ > 0.0)){
+    double trans_scaling_factor = 0.0;
+    double rot_scaling_factor = 0.0;
+    double scaling_factor = 0.0;
+
+    if(fabs(desired_vel[0]) > 0 && fabs(desired_vel[1]) > 0)
+      trans_scaling_factor = std::min(collision_trans_speed_ / fabs(desired_vel[0]), collision_trans_speed_ / fabs(desired_vel[1]));
+    else if(fabs(desired_vel[0]) > 0)
+      trans_scaling_factor = collision_trans_speed_ / (fabs(desired_vel[0]));
+    else if(fabs(desired_vel[1]) > 0)
+      trans_scaling_factor = collision_trans_speed_ / (fabs(desired_vel[1]));
+
+    if(fabs(desired_vel[2]) > 0)
+      rot_scaling_factor = collision_rot_speed_ / (fabs(desired_vel[2]));
+
+    if(collision_trans_speed_ > 0.0 && collision_rot_speed_ > 0.0)
+      scaling_factor = std::min(trans_scaling_factor, rot_scaling_factor);
+    else if(collision_trans_speed_ > 0.0)
+      scaling_factor = trans_scaling_factor;
+    else if(collision_rot_speed_ > 0.0)
+      scaling_factor = rot_scaling_factor;
+
+    //apply the scaling factor
+    best = scaling_factor * best;
+  }
+
+  twist.linear.x = best[0];
+  twist.linear.y = best[1];
+  twist.angular.z = best[2];
+
+}
 
 }

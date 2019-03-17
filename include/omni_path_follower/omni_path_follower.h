@@ -16,6 +16,8 @@
 #include <Eigen/Dense>
 #include <omni_path_follower/pose_se2.h>
 #include <omni_path_follower/misc.h>
+#include <base_local_planner/trajectory_planner_ros.h>
+
 
 // transforms
 #include <tf/tf.h>
@@ -28,6 +30,7 @@
 
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
+
 
 using std::string;
 
@@ -68,6 +71,8 @@ public:
                       std::vector<geometry_msgs::PoseStamped>& global_plan, double dist_behind_robot=1);
 
  void reconfigureCB(PathFollowerReconfigureConfig& config, uint32_t level);
+
+ void updateTrajectoryIfNeeded(geometry_msgs::Twist& twist);
 
 private:
   double angle_k_;
@@ -127,6 +132,14 @@ private:
   bool initialized_;
   bool goal_reached_;
   ros::Publisher marker_pub;
+
+  base_local_planner::TrajectoryPlannerROS planner_;
+
+  // members taken from assisted_teleop
+  int num_th_samples_, num_x_samples_;
+  double theta_range_;
+  double collision_trans_speed_, collision_rot_speed_;
+
 
   double sign(double x)  { return x < 0.0 ? -1.0 : +1.0; };
   float calculate_translation(float current, float desired);
