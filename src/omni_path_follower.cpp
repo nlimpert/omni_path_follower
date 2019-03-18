@@ -25,7 +25,6 @@ namespace omni_path_follower
     ros::NodeHandle nh("~/" + name);
 
     nh.param("angle_k", angle_k_, 1.5);
-    nh.param("goal_threshold_linear", goal_threshold_linear_, 0.05);
     nh.param("visualize", visualize_, false);
     nh.param("max_vel_lin", max_vel_lin_, 1.0);
     nh.param("min_vel_lin", min_vel_lin_, 1.0);
@@ -40,7 +39,7 @@ namespace omni_path_follower
     nh.param("obstacle_k", obstacle_k_, 1.0);
     nh.param("rotate_from_obstacles_k", rotate_from_obstacles_k_, 130.0);
     nh.param("pot_min_dist", pot_min_dist_, 0.2);
-    nh.param("cutoff_factor_at_goal", cutoff_factor_at_goal_, 0.1);
+//    nh.param("cutoff_factor_at_goal", cutoff_factor_at_goal_, 0.1);
     nh.param("goal_threshold_linear", goal_threshold_linear_, 0.05);
     nh.param("goal_threshold_angular", goal_threshold_angular_, 0.05);
     nh.param("lookahead_distance", lookahead_distance_, 1.0);
@@ -129,7 +128,7 @@ namespace omni_path_follower
     tf::poseStampedMsgToTF(transformed_plan.back(), global_goal);
     double dx = global_goal.getOrigin().getX() - robot_pose_.x();
     double dy = global_goal.getOrigin().getY() - robot_pose_.y();
-    double delta_orient = g2o::normalize_theta( tf::getYaw(global_goal.getRotation()) - robot_pose_.theta());
+    double delta_orient = angles::normalize_angle( tf::getYaw(global_goal.getRotation()) - robot_pose_.theta());
 
     bool xy_tolerance_reached = fabs(std::sqrt(dx*dx+dy*dy)) < goal_threshold_linear_;
     bool ori_tolerance_reached = fabs(delta_orient) < goal_threshold_angular_;
@@ -171,6 +170,8 @@ namespace omni_path_follower
 
     float cur_max_vel = max_vel_lin_;
 
+//    ROS_INFO("last_waypoint_selected_: %i robot_x: %f global_plan.x: %f", last_waypoint_selected_ ? 1 : 0, robot_goal_.x(), global_plan_.back().pose.position.x);
+
     // is the currently selected goal the goal of the global path?
     if (last_waypoint_selected_) {
       target_vel_x = fabs(dx) > 0.5 ? 0.5 : std::max(fabs(dx), max_vel_lin_at_goal_);
@@ -205,7 +206,6 @@ namespace omni_path_follower
     target_vel_.linear.y = drive_part_y * target_vel_y;
     target_vel_.angular.z = angle_k_ * target_ori;
 
-    updateTrajectoryIfNeeded(target_vel_);
 
     // limit angular vel
     if (fabs(target_vel_.angular.z) > 0.00001 ) {
@@ -213,20 +213,11 @@ namespace omni_path_follower
           (target_vel_.angular.z / fabs(target_vel_.angular.z));
     }
 
-//    //first, we'll check the trajectory that the user sent in... if its legal... we'll just follow it
-//    if(checkTrajectory(desired_vel[0], desired_vel[1], desired_vel[2], true)){
-//      geometry_msgs::Twist cmd;
-//      cmd.linear.x = desired_vel[0];
-//      cmd.linear.y = desired_vel[1];
-//      cmd.angular.z = desired_vel[2];
-//      pub_.publish(cmd);
-//      r.sleep();
-//      continue;
-//    }
-
     cmd_vel.linear.x = calculate_translation(last_vel_.linear.x, target_vel_.linear.x);
     cmd_vel.linear.y = calculate_translation(last_vel_.linear.y, target_vel_.linear.y);
     cmd_vel.angular.z = calculate_rotation(last_vel_.angular.z, target_vel_.angular.z);
+
+    updateTrajectoryIfNeeded(cmd_vel);
 
     last_vel_.linear.x = cmd_vel.linear.x;
     last_vel_.linear.y = cmd_vel.linear.y;
@@ -237,7 +228,7 @@ namespace omni_path_follower
       visualization_msgs::MarkerArray markers;
 
       // add repelling marker
-      goal_marker.header.frame_id = "/map";
+      goal_marker.header.frame_id = costmap_ros_->getGlobalFrameID();
       goal_marker.header.stamp = ros::Time::now();
 
       goal_marker.type = visualization_msgs::Marker::CYLINDER;
@@ -469,15 +460,18 @@ bool PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
 
   //TODO: find a more elegant solution here :-(
   Eigen::Vector3f vel = Eigen::Vector3f::Zero();
-  vel[0] = twist.linear.x;
-  vel[1] = twist.linear.y;
-  vel[2] = twist.angular.z;
+  vel[0] = twist.linear.x  * loop_time_ / 5.;
+  vel[1] = twist.linear.y  * loop_time_ / 5.;
+  vel[2] = twist.angular.z * loop_time_ / 5.;
 
   Eigen::Vector3f transformed_vel = Eigen::Vector3f::Zero();
   transformTwist(vel, transformed_vel);
 
   //first, we'll check the trajectory that the user sent in... if its legal... we'll just follow it
   double cost = costmap_model_->footprintCost(transformed_vel[0], transformed_vel[1], transformed_vel[2], footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius_);
+
+//  ROS_INFO("Check Trajectory: %f %f %f -> %f", transformed_vel[0], transformed_vel[1], transformed_vel[2], cost);
+//  ROS_INFO("Ori before transform: %f after: %f", transformed_vel[2], vel[2]);
 
 //  if(costmap_model_->footprintCost(twist.linear.x, twist.linear.y, twist.angular.z, footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius_) > 0 ){
   if(cost >= 0.0 ){
@@ -487,11 +481,6 @@ bool PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
   // TODO: We have to consider the actual loop time here since currently we're checking
   // for m/s while the loop time is much lower.
   ROS_WARN("Trajectory not feasible: %f %f %f -> %f", vel[0], vel[1], vel[2], cost);
-
-  Eigen::Vector3f desired_vel = Eigen::Vector3f::Zero();
-  desired_vel[0] = twist.linear.x;
-  desired_vel[1] = twist.linear.y;
-  desired_vel[2] = twist.angular.z;
 
   double dth = (theta_range_) / double(num_th_samples_);
   double dx = twist.linear.x / double(num_x_samples_);
@@ -504,15 +493,15 @@ bool PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
   //if we don't have a valid trajectory... we'll start checking others in the angular range specified
   for(int i = 0; i < num_x_samples_; ++i){
     Eigen::Vector3f check_vel = Eigen::Vector3f::Zero();
-    check_vel[0] = desired_vel[0] - i * dx;
-    check_vel[1] = desired_vel[1];
+    check_vel[0] = vel[0] - i * dx;
+    check_vel[1] = vel[1];
     check_vel[2] = start_th;
     transformTwist(check_vel, transformed_vel);
     for(int j = 0; j < num_th_samples_; ++j){
       check_vel[2] = start_th + j * dth;
       if(costmap_model_->footprintCost(transformed_vel[0], transformed_vel[1], transformed_vel[2], footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius_) >= 0.0 ){
         //if we have a legal trajectory, we'll score it based on its distance to our desired velocity
-        Eigen::Vector3f diffs = (desired_vel - check_vel);
+        Eigen::Vector3f diffs = (vel - check_vel);
         double sq_dist = diffs[0] * diffs[0] + diffs[1] * diffs[1] + diffs[2] * diffs[2];
 
         //if we have a trajectory that is better than our best one so far, we'll take it
@@ -532,15 +521,15 @@ bool PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
     double rot_scaling_factor = 0.0;
     double scaling_factor = 0.0;
 
-    if(fabs(desired_vel[0]) > 0 && fabs(desired_vel[1]) > 0)
-      trans_scaling_factor = std::min(collision_trans_speed_ / fabs(desired_vel[0]), collision_trans_speed_ / fabs(desired_vel[1]));
-    else if(fabs(desired_vel[0]) > 0)
-      trans_scaling_factor = collision_trans_speed_ / (fabs(desired_vel[0]));
-    else if(fabs(desired_vel[1]) > 0)
-      trans_scaling_factor = collision_trans_speed_ / (fabs(desired_vel[1]));
+    if(fabs(vel[0]) > 0 && fabs(vel[1]) > 0)
+      trans_scaling_factor = std::min(collision_trans_speed_ / fabs(vel[0]), collision_trans_speed_ / fabs(vel[1]));
+    else if(fabs(vel[0]) > 0)
+      trans_scaling_factor = collision_trans_speed_ / (fabs(vel[0]));
+    else if(fabs(vel[1]) > 0)
+      trans_scaling_factor = collision_trans_speed_ / (fabs(vel[1]));
 
-    if(fabs(desired_vel[2]) > 0)
-      rot_scaling_factor = collision_rot_speed_ / (fabs(desired_vel[2]));
+    if(fabs(vel[2]) > 0)
+      rot_scaling_factor = collision_rot_speed_ / (fabs(vel[2]));
 
     if(collision_trans_speed_ > 0.0 && collision_rot_speed_ > 0.0)
       scaling_factor = std::min(trans_scaling_factor, rot_scaling_factor);
