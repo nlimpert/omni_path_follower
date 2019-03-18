@@ -16,8 +16,8 @@
 #include <Eigen/Dense>
 #include <omni_path_follower/pose_se2.h>
 #include <omni_path_follower/misc.h>
-#include <base_local_planner/trajectory_planner_ros.h>
 
+#include <boost/shared_ptr.hpp>
 
 // transforms
 #include <tf/tf.h>
@@ -72,7 +72,7 @@ public:
 
  void reconfigureCB(PathFollowerReconfigureConfig& config, uint32_t level);
 
- void updateTrajectoryIfNeeded(geometry_msgs::Twist& twist);
+ bool updateTrajectoryIfNeeded(geometry_msgs::Twist& twist);
 
 private:
   double angle_k_;
@@ -126,24 +126,32 @@ private:
 
   std::vector<geometry_msgs::PoseStamped> global_plan_;
   geometry_msgs::PoseStamped goal_;
+
+  // TODO: change to TF2!
   tf::TransformListener* tfl_;
   costmap_2d::Costmap2DROS* costmap_ros_;
+  costmap_2d::Costmap2D* costmap_;
 
   bool initialized_;
   bool goal_reached_;
   ros::Publisher marker_pub;
 
-  base_local_planner::TrajectoryPlannerROS planner_;
+  boost::shared_ptr<base_local_planner::CostmapModel> costmap_model_;
 
   // members taken from assisted_teleop
   int num_th_samples_, num_x_samples_;
   double theta_range_;
   double collision_trans_speed_, collision_rot_speed_;
-
+  std::vector<geometry_msgs::Point> footprint_spec_; //!< Store the footprint of the robot
+  double robot_inscribed_radius_; //!< The radius of the inscribed circle of the robot (collision possible)
+  double robot_circumscribed_radius_; //!< The radius of the circumscribed circle of the robot
 
   double sign(double x)  { return x < 0.0 ? -1.0 : +1.0; };
   float calculate_translation(float current, float desired);
   float calculate_rotation( float current, float desired );
+
+  bool transformTwist(Eigen::Vector3f &twist_in, Eigen::Vector3f &twist_out);
+
 };
 
 } //namespace omni_path_follower

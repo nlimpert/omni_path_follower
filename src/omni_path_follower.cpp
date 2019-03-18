@@ -20,6 +20,8 @@ namespace omni_path_follower
   {
     tfl_ = tf;
     costmap_ros_ = costmap_ros;
+    costmap_ = costmap_ros_->getCostmap(); // locking should be done in MoveBase.
+
     ros::NodeHandle nh("~/" + name);
 
     nh.param("angle_k", angle_k_, 1.5);
@@ -46,15 +48,23 @@ namespace omni_path_follower
     nh.param("num_th_samples", num_th_samples_, 20);
     nh.param("num_x_samples", num_x_samples_, 10);
     nh.param("theta_range", theta_range_, 0.7);
+    nh.param("translational_collision_speed", collision_trans_speed_, 0.0);
+    nh.param("rotational_collision_speed", collision_rot_speed_, 0.0);
 
     global_frame_ = costmap_ros_->getGlobalFrameID();
+    footprint_spec_ = costmap_ros_->getRobotFootprint();
 
     //initialize empty global plan
     std::vector<geometry_msgs::PoseStamped> empty_plan;
     empty_plan.push_back(geometry_msgs::PoseStamped());
     global_plan_ = empty_plan;
 
-    planner_.initialize("planner", tfl_, costmap_ros_);
+
+    costmap_model_ = boost::make_shared<base_local_planner::CostmapModel>(*costmap_);
+
+    costmap_2d::calculateMinAndMaxDistances(footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius_);
+
+    ROS_INFO("Calculated MinAndMaxDistances: %f %f", robot_inscribed_radius_, robot_circumscribed_radius_);
 
     dynamic_recfg_ = boost::make_shared< dynamic_reconfigure::Server<PathFollowerReconfigureConfig> >(nh);
     dynamic_reconfigure::Server<PathFollowerReconfigureConfig>::CallbackType cb = boost::bind(&PathFollower::reconfigureCB, this, _1, _2);
@@ -98,6 +108,22 @@ namespace omni_path_follower
       ROS_WARN("Could not transform the global plan to the frame of the controller");
       return false;
     }
+    int global_plan_pose_in_lookahead = transformed_plan.size() - 1;
+//    double d = 0.0;
+
+    for (int i = transformed_plan.size() - 1; i > 0; i--) {
+      // find a pose in the global path that's not further than lookahead_distance_
+      double x_square = (robot_pose_.x() - transformed_plan[i].pose.position.x) * (robot_pose_.x() - transformed_plan[i].pose.position.x);
+      double y_square = (robot_pose_.y() - transformed_plan[i].pose.position.y) * (robot_pose_.y() - transformed_plan[i].pose.position.y);
+      double d = sqrt(x_square + y_square);
+//      ROS_INFO("%i %f %f and %f", i , transformed_plan[i].pose.position.x ,transformed_plan[i].pose.position.y, d);
+      if (d < lookahead_distance_) {
+        global_plan_pose_in_lookahead = i;
+//        ROS_INFO("took %i at distance %f", global_plan_pose_in_lookahead, d);
+        break;
+      }
+    }
+
     // check if global goal is reached
     tf::Stamped<tf::Pose> global_goal;
     tf::poseStampedMsgToTF(transformed_plan.back(), global_goal);
@@ -116,25 +142,24 @@ namespace omni_path_follower
     }
 
     // Get current goal point (last point of the transformed plan)
-    tf::Stamped<tf::Pose> goal_point, goal_point_2;
-    tf::poseStampedMsgToTF(transformed_plan.back(), goal_point);
-    tf::poseStampedMsgToTF(global_plan_.back(), goal_point_2);
+    tf::Stamped<tf::Pose> local_goal;
+    tf::poseStampedMsgToTF(transformed_plan[global_plan_pose_in_lookahead], local_goal);
 
-    robot_goal_.x() = goal_point.getOrigin().getX();
-    robot_goal_.y() = goal_point.getOrigin().getY();
+    robot_goal_.x() = local_goal.getOrigin().getX();
+    robot_goal_.y() = local_goal.getOrigin().getY();
 
     double robot_ori = tf::getYaw(robot_pose.getRotation());
 
     Eigen::Vector2d vec_goalrobot(robot_goal_.x() - robot_pose.getOrigin().getX(),
                                   robot_goal_.y() - robot_pose.getOrigin().getY());
 
-    float att_x = 0., att_y = 0.;
-    float att_phi = 0.0;
+//    float att_x = 0., att_y = 0.;
+//    float att_phi = 0.0;
 
     // add current goal as an attraction point to target
-    att_x = vec_goalrobot[0];
-    att_y = vec_goalrobot[1];
-    att_phi = angles::normalize_angle(atan2(att_y, att_x) - robot_ori);
+//    att_x = vec_goalrobot[0];
+//    att_y = vec_goalrobot[1];
+//    att_phi = angles::normalize_angle(atan2(att_y, att_x) - robot_ori);
 
     // determine whether we selected the last waypoint in order to scale down the rep force.
     bool last_waypoint_selected_ =
@@ -212,7 +237,7 @@ namespace omni_path_follower
       visualization_msgs::MarkerArray markers;
 
       // add repelling marker
-      goal_marker.header.frame_id = "/base_link";
+      goal_marker.header.frame_id = "/map";
       goal_marker.header.stamp = ros::Time::now();
 
       goal_marker.type = visualization_msgs::Marker::CYLINDER;
@@ -259,6 +284,9 @@ namespace omni_path_follower
       {
         double dx = robot.getOrigin().x() - it->pose.position.x;
         double dy = robot.getOrigin().y() - it->pose.position.y;
+//        ROS_INFO("robot_pose: %f %f vs %f %f", robot_pose_.x(), robot_pose_.y(), robot.getOrigin().x(), robot.getOrigin().y());
+//        ROS_INFO("d: %f %f it: %f %f", dx, dy, it->pose.position.x,it->pose.position.y);
+
         double dist_sq = dx * dx + dy * dy;
         if (dist_sq < dist_thresh_sq)
         {
@@ -435,14 +463,30 @@ namespace omni_path_follower
     return exec_rot;
   }
 
-void PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
+bool PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
 {
   // The following functionality is essentially taken from navigation_experimental/assisted_teleop
 
+  //TODO: find a more elegant solution here :-(
+  Eigen::Vector3f vel = Eigen::Vector3f::Zero();
+  vel[0] = twist.linear.x;
+  vel[1] = twist.linear.y;
+  vel[2] = twist.angular.z;
+
+  Eigen::Vector3f transformed_vel = Eigen::Vector3f::Zero();
+  transformTwist(vel, transformed_vel);
+
   //first, we'll check the trajectory that the user sent in... if its legal... we'll just follow it
-  if(planner_.checkTrajectory(twist.linear.x, twist.linear.y, twist.angular.z, true)){
-    return;
+  double cost = costmap_model_->footprintCost(transformed_vel[0], transformed_vel[1], transformed_vel[2], footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius_);
+
+//  if(costmap_model_->footprintCost(twist.linear.x, twist.linear.y, twist.angular.z, footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius_) > 0 ){
+  if(cost >= 0.0 ){
+    return true;
   }
+
+  // TODO: We have to consider the actual loop time here since currently we're checking
+  // for m/s while the loop time is much lower.
+  ROS_WARN("Trajectory not feasible: %f %f %f -> %f", vel[0], vel[1], vel[2], cost);
 
   Eigen::Vector3f desired_vel = Eigen::Vector3f::Zero();
   desired_vel[0] = twist.linear.x;
@@ -451,7 +495,7 @@ void PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
 
   double dth = (theta_range_) / double(num_th_samples_);
   double dx = twist.linear.x / double(num_x_samples_);
-  double start_th = twist.angular.z - theta_range_ / 2.0 ;
+  double start_th = twist.angular.z - theta_range_ / 2.0;
 
   Eigen::Vector3f best = Eigen::Vector3f::Zero();
   double best_dist = DBL_MAX;
@@ -463,9 +507,10 @@ void PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
     check_vel[0] = desired_vel[0] - i * dx;
     check_vel[1] = desired_vel[1];
     check_vel[2] = start_th;
+    transformTwist(check_vel, transformed_vel);
     for(int j = 0; j < num_th_samples_; ++j){
       check_vel[2] = start_th + j * dth;
-      if(planner_.checkTrajectory(check_vel[0], check_vel[1], check_vel[2], false)){
+      if(costmap_model_->footprintCost(transformed_vel[0], transformed_vel[1], transformed_vel[2], footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius_) >= 0.0 ){
         //if we have a legal trajectory, we'll score it based on its distance to our desired velocity
         Eigen::Vector3f diffs = (desired_vel - check_vel);
         double sq_dist = diffs[0] * diffs[0] + diffs[1] * diffs[1] + diffs[2] * diffs[2];
@@ -512,6 +557,42 @@ void PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
   twist.linear.y = best[1];
   twist.angular.z = best[2];
 
+  return true;
+}
+
+bool PathFollower::transformTwist(Eigen::Vector3f& twist_in, Eigen::Vector3f &twist_out)
+{
+  //TODO: find a more elegant solution here :-(
+  geometry_msgs::PoseStamped stamped_in, stamped_out;
+
+  stamped_in.header.frame_id = costmap_ros_->getBaseFrameID();
+  stamped_in.header.stamp = ros::Time::now();
+  stamped_in.pose.position.x = twist_in[0];
+  stamped_in.pose.position.y = twist_in[1];
+
+  tf::Quaternion quat = tf::createQuaternionFromYaw(twist_in[2]);
+  stamped_in.pose.orientation.x = quat.getX();
+  stamped_in.pose.orientation.y = quat.getY();
+  stamped_in.pose.orientation.z = quat.getZ();
+  stamped_in.pose.orientation.w = quat.getW();
+
+  try{
+    tfl_->transformPose (costmap_ros_->getGlobalFrameID(), ros::Time(0), stamped_in, costmap_ros_->getBaseFrameID(), stamped_out);
+  }
+  catch (tf2::TransformException &ex) {
+    ROS_WARN("%s",ex.what());
+    return false;
+  }
+
+  quat.setX(stamped_out.pose.orientation.x);
+  quat.setY(stamped_out.pose.orientation.y);
+  quat.setZ(stamped_out.pose.orientation.z);
+  quat.setW(stamped_out.pose.orientation.w);
+
+  twist_out[0] = stamped_out.pose.position.x;
+  twist_out[1] = stamped_out.pose.position.y;
+  twist_out[2] = tf::getYaw(quat);
+  return true;
 }
 
 }
