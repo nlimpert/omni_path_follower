@@ -58,6 +58,7 @@ namespace omni_path_follower
     empty_plan.push_back(geometry_msgs::PoseStamped());
     global_plan_ = empty_plan;
 
+    d_global_to_robot_pose = Eigen::Vector3f::Zero();
 
     costmap_model_ = boost::make_shared<base_local_planner::CostmapModel>(*costmap_);
 
@@ -100,38 +101,32 @@ namespace omni_path_follower
     pruneGlobalPlan(*tfl_, robot_pose, global_plan_);
 
     // Transform global plan to the frame of interest (w.r.t. the local costmap)
-    std::vector<geometry_msgs::PoseStamped> transformed_plan;
-
-    if(!base_local_planner::transformGlobalPlan(*tfl_, global_plan_, robot_pose, *costmap_ros_->getCostmap(), costmap_ros_->getGlobalFrameID(), transformed_plan))
+    if(!base_local_planner::transformGlobalPlan(*tfl_, global_plan_, robot_pose, *costmap_ros_->getCostmap(), costmap_ros_->getGlobalFrameID(), transformed_plan_))
     {
       ROS_WARN("Could not transform the global plan to the frame of the controller");
       return false;
     }
-    int global_plan_pose_in_lookahead = transformed_plan.size() - 1;
-//    double d = 0.0;
+    int global_plan_pose_in_lookahead = transformed_plan_.size() - 1;
 
-    for (int i = transformed_plan.size() - 1; i > 0; i--) {
+    for (int i = transformed_plan_.size() - 1; i > 0; i--) {
       // find a pose in the global path that's not further than lookahead_distance_
-      double x_square = (robot_pose_.x() - transformed_plan[i].pose.position.x) * (robot_pose_.x() - transformed_plan[i].pose.position.x);
-      double y_square = (robot_pose_.y() - transformed_plan[i].pose.position.y) * (robot_pose_.y() - transformed_plan[i].pose.position.y);
+      double x_square = (robot_pose_.x() - transformed_plan_[i].pose.position.x) * (robot_pose_.x() - transformed_plan_[i].pose.position.x);
+      double y_square = (robot_pose_.y() - transformed_plan_[i].pose.position.y) * (robot_pose_.y() - transformed_plan_[i].pose.position.y);
       double d = sqrt(x_square + y_square);
-//      ROS_INFO("%i %f %f and %f", i , transformed_plan[i].pose.position.x ,transformed_plan[i].pose.position.y, d);
       if (d < lookahead_distance_) {
         global_plan_pose_in_lookahead = i;
-//        ROS_INFO("took %i at distance %f", global_plan_pose_in_lookahead, d);
         break;
       }
     }
 
     // check if global goal is reached
-    tf::Stamped<tf::Pose> global_goal;
-    tf::poseStampedMsgToTF(transformed_plan.back(), global_goal);
-    double dx = global_goal.getOrigin().getX() - robot_pose_.x();
-    double dy = global_goal.getOrigin().getY() - robot_pose_.y();
-    double delta_orient = angles::normalize_angle( tf::getYaw(global_goal.getRotation()) - robot_pose_.theta());
+    tf::poseStampedMsgToTF(transformed_plan_.back(), global_goal_);
 
-    bool xy_tolerance_reached = fabs(std::sqrt(dx*dx+dy*dy)) < goal_threshold_linear_;
-    bool ori_tolerance_reached = fabs(delta_orient) < goal_threshold_angular_;
+    d_global_to_robot_pose[0] = global_goal_.getOrigin().getX() - robot_pose_.x();
+    d_global_to_robot_pose[1] = global_goal_.getOrigin().getY() - robot_pose_.y();
+    d_global_to_robot_pose[2] = angles::normalize_angle( tf::getYaw(global_goal_.getRotation()) - robot_pose_.theta());
+    bool xy_tolerance_reached = fabs(std::sqrt(d_global_to_robot_pose[0]*d_global_to_robot_pose[0]+d_global_to_robot_pose[1]*d_global_to_robot_pose[1])) < goal_threshold_linear_;
+    bool ori_tolerance_reached = fabs(d_global_to_robot_pose[2]) < goal_threshold_angular_;
 
     if(xy_tolerance_reached && ori_tolerance_reached)
     {
@@ -140,91 +135,29 @@ namespace omni_path_follower
       return true;
     }
 
-    // Get current goal point (last point of the transformed plan)
-    tf::Stamped<tf::Pose> local_goal;
-    tf::poseStampedMsgToTF(transformed_plan[global_plan_pose_in_lookahead], local_goal);
+    generateTrajectoryToGoal(target_vel_, global_plan_pose_in_lookahead);
 
-    robot_goal_.x() = local_goal.getOrigin().getX();
-    robot_goal_.y() = local_goal.getOrigin().getY();
+    while (validateTrajectory(target_vel_) == false && global_plan_pose_in_lookahead > 0)
+    {
+      ROS_WARN("Trajectory not feasible: %f %f %f", target_vel_.linear.x, target_vel_.linear.y, target_vel_.angular.z);
 
-    double robot_ori = tf::getYaw(robot_pose.getRotation());
-
-    Eigen::Vector2d vec_goalrobot(robot_goal_.x() - robot_pose.getOrigin().getX(),
-                                  robot_goal_.y() - robot_pose.getOrigin().getY());
-
-//    float att_x = 0., att_y = 0.;
-//    float att_phi = 0.0;
-
-    // add current goal as an attraction point to target
-//    att_x = vec_goalrobot[0];
-//    att_y = vec_goalrobot[1];
-//    att_phi = angles::normalize_angle(atan2(att_y, att_x) - robot_ori);
-
-    // determine whether we selected the last waypoint in order to scale down the rep force.
-    bool last_waypoint_selected_ =
-        fabs(robot_goal_.x() - global_plan_.back().pose.position.x) < 0.000001 &&
-        fabs(robot_goal_.y() - global_plan_.back().pose.position.y) < 0.000001;
-
-    float target_vel_x = 0.;
-    float target_vel_y = 0.;
-
-    float cur_max_vel = max_vel_lin_;
-
-//    ROS_INFO("last_waypoint_selected_: %i robot_x: %f global_plan.x: %f", last_waypoint_selected_ ? 1 : 0, robot_goal_.x(), global_plan_.back().pose.position.x);
-
-    // is the currently selected goal the goal of the global path?
-    if (last_waypoint_selected_) {
-      target_vel_x = fabs(dx) > 0.5 ? 0.5 : std::max(fabs(dx), max_vel_lin_at_goal_);
-      target_vel_y = fabs(dy) > 0.5 ? 0.5 : std::max(fabs(dy), max_vel_lin_at_goal_);
-    } else {
-      target_vel_x = cur_max_vel;
-      target_vel_y = cur_max_vel;
-    }
-
-    double goal_phi = angles::shortest_angular_distance(robot_ori, atan2(vec_goalrobot[1], vec_goalrobot[0]));
-
-    float target_ori = 0.;
-
-    // rotate to goal pose when we are getting close
-    if (fabs(dx) < rot_to_goal_pose_dist_ && fabs(dy) < rot_to_goal_pose_dist_) {
-      target_ori = angles::shortest_angular_distance(robot_ori,tf::getYaw(global_goal.getRotation()));
-    } else {
-      target_ori = goal_phi;
-    }
-
-    float drive_x = vec_goalrobot[0];
-    float drive_y = vec_goalrobot[1];
-    float drive_phi = angles::normalize_angle(atan2(drive_y, drive_x) - robot_ori - target_ori * ang_trans_k_);
-
-    float drive_part_x = 0.f;
-    float drive_part_y = 0.f;
-
-    drive_part_x = std::cos( drive_phi );
-    drive_part_y = std::sin( drive_phi );
-
-    target_vel_.linear.x = drive_part_x * target_vel_x;
-    target_vel_.linear.y = drive_part_y * target_vel_y;
-    target_vel_.angular.z = angle_k_ * target_ori;
-
-
-    // limit angular vel
-    if (fabs(target_vel_.angular.z) > 0.00001 ) {
-      target_vel_.angular.z = std::min(fabs(target_vel_.angular.z), max_vel_theta_) *
-          (target_vel_.angular.z / fabs(target_vel_.angular.z));
+      // Bisect global goal selection.
+      global_plan_pose_in_lookahead /= 2;
+      generateTrajectoryToGoal(target_vel_, global_plan_pose_in_lookahead);
     }
 
     cmd_vel.linear.x = calculate_translation(last_vel_.linear.x, target_vel_.linear.x);
     cmd_vel.linear.y = calculate_translation(last_vel_.linear.y, target_vel_.linear.y);
     cmd_vel.angular.z = calculate_rotation(last_vel_.angular.z, target_vel_.angular.z);
 
-    updateTrajectoryIfNeeded(cmd_vel);
+//    scaleTrajectory(cmd_vel);
 
     last_vel_.linear.x = cmd_vel.linear.x;
     last_vel_.linear.y = cmd_vel.linear.y;
     last_vel_.angular.z = cmd_vel.angular.z;
 
     if (visualize_ == true) {
-      visualization_msgs::Marker goal_marker, att_marker, result_marker_vel;
+      visualization_msgs::Marker goal_marker;
       visualization_msgs::MarkerArray markers;
 
       // add repelling marker
@@ -300,165 +233,163 @@ namespace omni_path_follower
     return true;
   }
 
-  void PathFollower::reconfigureCB(PathFollowerReconfigureConfig& config, uint32_t level)
-  {
-    visualize_               = config.visualize;
-    pot_min_dist_            = config.pot_min_dist;
-    max_vel_lin_             = config.max_vel_lin;
-    min_vel_lin_             = config.min_vel_lin;
-    max_vel_lin_at_goal_     = config.max_vel_lin_at_goal;
-    max_vel_theta_           = config.max_vel_theta;
-    min_vel_theta_           = config.min_vel_theta;
-    lookahead_distance_      = config.lookahead_distance;
-    acc_lim_lin_             = config.acc_lim_lin;
-    acc_lim_theta_           = config.acc_lim_theta;
-    rot_to_goal_pose_dist_   = config.rot_to_goal_pose_dist;
-    angle_k_                 = config.angle_k;
-    goal_k_                  = config.goal_k;
-    obstacle_k_              = config.obstacle_k;
-    rotate_from_obstacles_k_ = config.rotate_from_obstacles_k;
-    cutoff_factor_at_goal_   = config.cutoff_factor_at_goal;
-    goal_threshold_linear_   = config.goal_threshold_linear;
-    goal_threshold_angular_  = config.goal_threshold_angular;
-    ang_trans_k_             = config.ang_trans_k;
-
-    acc_lin_inc_   = acc_lim_lin_ * loop_time_;
-    acc_theta_inc_ = acc_lim_theta_ * loop_time_;
-    acc_lin_dec_   = acc_lim_lin_ * loop_time_ * 10.;
-    acc_theta_dec_ = acc_lim_theta_ * loop_time_ * 10.;
-
-  }
-
-  bool PathFollower::isGoalReached()
-  {
-    return goal_reached_;
-  }
-
-  bool PathFollower::setPlan(const std::vector< geometry_msgs::PoseStamped > &plan)
-  {
-    if(!initialized_)
-    {
-      ROS_ERROR("path follower: planner has not been initialized");
-      return false;
-    }
-
-    ROS_DEBUG("path follower: got plan");
-    global_plan_  = plan;
-
-    path_index_ = 0;
-    path_length_ = global_plan_.size();
-    last_waypoint_ = global_plan_.at(path_index_).pose;
-    next_waypoint_ = global_plan_.at(path_index_ + 1).pose;
-
-    goal_reached_ = false;
-    return true;
-  }
-
-  /** Implementation of Calculate Translation Function.
-   * This method is taken from the Fawkes plugin "colli":
-   * https://www.fawkesrobotics.org/
-   *
-   * @param current The current translation of the robot
-   * @param desired The desired translation of the robot
-   * @return the new translation
-   */
-  float PathFollower::calculate_translation(float current, float desired)
-  {
-    float exec_trans = 0.0;
-
-    if (desired < current) {
-
-      if (current > 0.0) {
-        exec_trans = current - acc_lin_dec_;
-        exec_trans = std::max( exec_trans, desired );
-
-      } else if (current < 0.0) {
-        exec_trans = current - acc_lin_inc_;
-        exec_trans = std::max( exec_trans, desired );
-
-      }  else {
-        exec_trans = std::max( -acc_lin_inc_, desired );
-      }
-
-    } else if (desired > current) {
-
-      if (current > 0.0) {
-        exec_trans = current + acc_lin_inc_;
-        exec_trans = std::min( exec_trans, desired );
-
-      } else if (current < 0.0) {
-        exec_trans = current + acc_lin_dec_;
-        exec_trans = std::min( exec_trans, desired );
-
-      } else {
-        exec_trans = std::min( acc_lin_inc_, desired );
-      }
-
-    } else {
-      // nothing to change
-      exec_trans = desired;
-    }
-    return exec_trans;
-  }
-
-  /** Implementation of Calculate Rotation Function.
-   * This method is taken from the Fawkes plugin "colli":
-   * https://www.fawkesrobotics.org/
-   *
-   * @param current The current rotation of the robot
-   * @param desired The desired rotation of the robot
-   * @return the new rotation
-   */
-  float PathFollower::calculate_rotation( float current, float desired )
-  {
-    float exec_rot = 0.0;
-
-    if (desired < current) {
-
-      if (current > 0.0) {
-        // decrease right rot
-        exec_rot = current - acc_theta_dec_;
-        exec_rot = std::max( exec_rot, desired );
-
-      } else if (current < 0.0) {
-        // increase left rot
-        exec_rot = current - acc_theta_inc_;
-        exec_rot = std::max( exec_rot, desired );
-
-      } else {
-        // current == 0;
-        exec_rot = std::max( -acc_theta_inc_, desired );
-      }
-
-    } else if (desired > current) {
-      if (current > 0.0) {
-        // increase right rot
-        exec_rot = current + acc_theta_inc_;
-        exec_rot = std::min( exec_rot, desired );
-
-      } else if (current < 0.0) {
-        // decrease left rot
-        exec_rot = current + acc_theta_dec_;
-        exec_rot = std::min( exec_rot, desired );
-
-      } else {
-        // current == 0
-        exec_rot = std::min( acc_theta_inc_, desired );
-      }
-
-    } else {
-      // nothing to change!!!
-      exec_rot = desired;
-    }
-
-    return exec_rot;
-  }
-
-bool PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
+void PathFollower::reconfigureCB(PathFollowerReconfigureConfig& config, uint32_t level)
 {
-  // The following functionality is essentially taken from navigation_experimental/assisted_teleop
+  visualize_               = config.visualize;
+  pot_min_dist_            = config.pot_min_dist;
+  max_vel_lin_             = config.max_vel_lin;
+  min_vel_lin_             = config.min_vel_lin;
+  max_vel_lin_at_goal_     = config.max_vel_lin_at_goal;
+  max_vel_theta_           = config.max_vel_theta;
+  min_vel_theta_           = config.min_vel_theta;
+  lookahead_distance_      = config.lookahead_distance;
+  acc_lim_lin_             = config.acc_lim_lin;
+  acc_lim_theta_           = config.acc_lim_theta;
+  rot_to_goal_pose_dist_   = config.rot_to_goal_pose_dist;
+  angle_k_                 = config.angle_k;
+  goal_k_                  = config.goal_k;
+  obstacle_k_              = config.obstacle_k;
+  rotate_from_obstacles_k_ = config.rotate_from_obstacles_k;
+  cutoff_factor_at_goal_   = config.cutoff_factor_at_goal;
+  goal_threshold_linear_   = config.goal_threshold_linear;
+  goal_threshold_angular_  = config.goal_threshold_angular;
+  ang_trans_k_             = config.ang_trans_k;
 
-  //TODO: find a more elegant solution here :-(
+  acc_lin_inc_   = acc_lim_lin_ * loop_time_;
+  acc_theta_inc_ = acc_lim_theta_ * loop_time_;
+  acc_lin_dec_   = acc_lim_lin_ * loop_time_ * 10.;
+  acc_theta_dec_ = acc_lim_theta_ * loop_time_ * 10.;
+}
+
+bool PathFollower::isGoalReached()
+{
+  return goal_reached_;
+}
+
+bool PathFollower::setPlan(const std::vector< geometry_msgs::PoseStamped > &plan)
+{
+  if(!initialized_)
+  {
+    ROS_ERROR("path follower: planner has not been initialized");
+    return false;
+  }
+
+  ROS_DEBUG("path follower: got plan");
+  global_plan_  = plan;
+
+  path_index_ = 0;
+  path_length_ = global_plan_.size();
+  last_waypoint_ = global_plan_.at(path_index_).pose;
+  next_waypoint_ = global_plan_.at(path_index_ + 1).pose;
+
+  transformed_plan_.clear();
+
+  goal_reached_ = false;
+  return true;
+}
+
+/** Implementation of Calculate Translation Function.
+ * This method is taken from the Fawkes plugin "colli":
+ * https://www.fawkesrobotics.org/
+ *
+ * @param current The current translation of the robot
+ * @param desired The desired translation of the robot
+ * @return the new translation
+ */
+float PathFollower::calculate_translation(float current, float desired)
+{
+  float exec_trans = 0.0;
+
+  if (desired < current) {
+
+    if (current > 0.0) {
+      exec_trans = current - acc_lin_dec_;
+      exec_trans = std::max( exec_trans, desired );
+
+    } else if (current < 0.0) {
+      exec_trans = current - acc_lin_inc_;
+      exec_trans = std::max( exec_trans, desired );
+
+    }  else {
+      exec_trans = std::max( -acc_lin_inc_, desired );
+    }
+
+  } else if (desired > current) {
+
+    if (current > 0.0) {
+      exec_trans = current + acc_lin_inc_;
+      exec_trans = std::min( exec_trans, desired );
+
+    } else if (current < 0.0) {
+      exec_trans = current + acc_lin_dec_;
+      exec_trans = std::min( exec_trans, desired );
+
+    } else {
+      exec_trans = std::min( acc_lin_inc_, desired );
+    }
+
+  } else {
+    // nothing to change
+    exec_trans = desired;
+  }
+  return exec_trans;
+}
+
+/** Implementation of Calculate Rotation Function.
+ * This method is taken from the Fawkes plugin "colli":
+ * https://www.fawkesrobotics.org/
+ *
+ * @param current The current rotation of the robot
+ * @param desired The desired rotation of the robot
+ * @return the new rotation
+ */
+float PathFollower::calculate_rotation( float current, float desired )
+{
+  float exec_rot = 0.0;
+
+  if (desired < current) {
+
+    if (current > 0.0) {
+      // decrease right rot
+      exec_rot = current - acc_theta_dec_;
+      exec_rot = std::max( exec_rot, desired );
+
+    } else if (current < 0.0) {
+      // increase left rot
+      exec_rot = current - acc_theta_inc_;
+      exec_rot = std::max( exec_rot, desired );
+
+    } else {
+      // current == 0;
+      exec_rot = std::max( -acc_theta_inc_, desired );
+    }
+
+  } else if (desired > current) {
+    if (current > 0.0) {
+      // increase right rot
+      exec_rot = current + acc_theta_inc_;
+      exec_rot = std::min( exec_rot, desired );
+
+    } else if (current < 0.0) {
+      // decrease left rot
+      exec_rot = current + acc_theta_dec_;
+      exec_rot = std::min( exec_rot, desired );
+
+    } else {
+      // current == 0
+      exec_rot = std::min( acc_theta_inc_, desired );
+    }
+
+  } else {
+    // nothing to change!!!
+    exec_rot = desired;
+  }
+
+  return exec_rot;
+}
+
+bool PathFollower::validateTrajectory(geometry_msgs::Twist& twist)
+{
   Eigen::Vector3f vel = Eigen::Vector3f::Zero();
   vel[0] = twist.linear.x  * loop_time_ / 5.;
   vel[1] = twist.linear.y  * loop_time_ / 5.;
@@ -474,14 +405,25 @@ bool PathFollower::updateTrajectoryIfNeeded(geometry_msgs::Twist& twist)
 //  ROS_INFO("Ori before transform: %f after: %f", transformed_vel[2], vel[2]);
 
 //  if(costmap_model_->footprintCost(twist.linear.x, twist.linear.y, twist.angular.z, footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius_) > 0 ){
-  if(cost >= 0.0 ){
-    return true;
-  }
+  return cost >= 0.0;
+//  if(cost >= 0.0 ){
+//    return true;
+//  }
+}
+
+bool PathFollower::scaleTrajectory(geometry_msgs::Twist& twist)
+{
+  // The following functionality is essentially taken from navigation_experimental/assisted_teleop
+  Eigen::Vector3f vel = Eigen::Vector3f::Zero();
+  vel[0] = twist.linear.x  * loop_time_ / 5.;
+  vel[1] = twist.linear.y  * loop_time_ / 5.;
+  vel[2] = twist.angular.z * loop_time_ / 5.;
+
+  Eigen::Vector3f transformed_vel = Eigen::Vector3f::Zero();
+  transformTwist(vel, transformed_vel);
 
   // TODO: We have to consider the actual loop time here since currently we're checking
   // for m/s while the loop time is much lower.
-  ROS_WARN("Trajectory not feasible: %f %f %f -> %f", vel[0], vel[1], vel[2], cost);
-
   double dth = (theta_range_) / double(num_th_samples_);
   double dx = twist.linear.x / double(num_x_samples_);
   double start_th = twist.angular.z - theta_range_ / 2.0;
@@ -581,6 +523,81 @@ bool PathFollower::transformTwist(Eigen::Vector3f& twist_in, Eigen::Vector3f &tw
   twist_out[0] = stamped_out.pose.position.x;
   twist_out[1] = stamped_out.pose.position.y;
   twist_out[2] = tf::getYaw(quat);
+  return true;
+}
+
+bool PathFollower::generateTrajectoryToGoal(geometry_msgs::Twist &twist, int &local_plan_index)
+{
+  // Get current goal point (last point of the transformed plan)
+  tf::poseStampedMsgToTF(transformed_plan_[local_plan_index], local_goal_);
+
+  robot_goal_.x() = local_goal_.getOrigin().getX();
+  robot_goal_.y() = local_goal_.getOrigin().getY();
+
+  double robot_ori = robot_pose_.theta();
+
+  Eigen::Vector2d vec_goalrobot(robot_goal_.x() - robot_pose_.position()[0],
+                                robot_goal_.y() - robot_pose_.position()[1]);
+
+//    float att_x = 0., att_y = 0.;
+//    float att_phi = 0.0;
+
+  // add current goal as an attraction point to target
+//    att_x = vec_goalrobot[0];
+//    att_y = vec_goalrobot[1];
+//    att_phi = angles::normalize_angle(atan2(att_y, att_x) - robot_ori);
+
+  // determine whether we selected the last waypoint in order to scale down the rep force.
+  bool last_waypoint_selected_ =
+      fabs(robot_goal_.x() - global_plan_.back().pose.position.x) < 0.000001 &&
+      fabs(robot_goal_.y() - global_plan_.back().pose.position.y) < 0.000001;
+
+  float target_vel_x = 0.;
+  float target_vel_y = 0.;
+
+  float cur_max_vel = max_vel_lin_;
+
+//    ROS_INFO("last_waypoint_selected_: %i robot_x: %f global_plan.x: %f", last_waypoint_selected_ ? 1 : 0, robot_goal_.x(), global_plan_.back().pose.position.x);
+
+  // is the currently selected goal the goal of the global path?
+  if (last_waypoint_selected_) {
+    target_vel_x = fabs(d_global_to_robot_pose[0]) > 0.5 ? 0.5 : std::max(fabs(d_global_to_robot_pose[0]), (float)max_vel_lin_at_goal_);
+    target_vel_y = fabs(d_global_to_robot_pose[1]) > 0.5 ? 0.5 : std::max(fabs(d_global_to_robot_pose[1]), (float)max_vel_lin_at_goal_);
+  } else {
+    target_vel_x = cur_max_vel;
+    target_vel_y = cur_max_vel;
+  }
+
+  double goal_phi = angles::shortest_angular_distance(robot_ori, atan2(vec_goalrobot[1], vec_goalrobot[0]));
+
+  float target_ori = 0.;
+
+  // rotate to goal pose when we are getting close
+  if (fabs(d_global_to_robot_pose[0]) < rot_to_goal_pose_dist_ && fabs(d_global_to_robot_pose[1]) < rot_to_goal_pose_dist_) {
+    target_ori = angles::shortest_angular_distance(robot_ori,tf::getYaw(global_goal_.getRotation()));
+  } else {
+    target_ori = goal_phi;
+  }
+
+  float drive_x = vec_goalrobot[0];
+  float drive_y = vec_goalrobot[1];
+  float drive_phi = angles::normalize_angle(atan2(drive_y, drive_x) - robot_ori - target_ori * ang_trans_k_);
+
+  float drive_part_x = 0.f;
+  float drive_part_y = 0.f;
+
+  drive_part_x = std::cos( drive_phi );
+  drive_part_y = std::sin( drive_phi );
+
+  target_vel_.linear.x = drive_part_x * target_vel_x;
+  target_vel_.linear.y = drive_part_y * target_vel_y;
+  target_vel_.angular.z = angle_k_ * target_ori;
+
+  // limit angular vel
+  if (fabs(target_vel_.angular.z) > 0.00001 ) {
+    target_vel_.angular.z = std::min(fabs(target_vel_.angular.z), max_vel_theta_) *
+        (target_vel_.angular.z / fabs(target_vel_.angular.z));
+  }
   return true;
 }
 

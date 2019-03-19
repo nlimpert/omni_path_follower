@@ -72,8 +72,6 @@ public:
 
  void reconfigureCB(PathFollowerReconfigureConfig& config, uint32_t level);
 
- bool updateTrajectoryIfNeeded(geometry_msgs::Twist& twist);
-
 private:
   double angle_k_;
   double goal_threshold_linear_;
@@ -125,6 +123,8 @@ private:
   geometry_msgs::Twist last_vel_; //!< Store current robot translational and angular velocity (vx, vy, omega)
 
   std::vector<geometry_msgs::PoseStamped> global_plan_;
+  std::vector<geometry_msgs::PoseStamped> transformed_plan_;
+
   geometry_msgs::PoseStamped goal_;
 
   // TODO: change to TF2!
@@ -146,11 +146,18 @@ private:
   double robot_inscribed_radius_; //!< The radius of the inscribed circle of the robot (collision possible)
   double robot_circumscribed_radius_; //!< The radius of the circumscribed circle of the robot
 
+  tf::Stamped<tf::Pose> local_goal_;
+  tf::Stamped<tf::Pose> global_goal_;
+  Eigen::Vector3f d_global_to_robot_pose;
+
   double sign(double x)  { return x < 0.0 ? -1.0 : +1.0; };
   float calculate_translation(float current, float desired);
   float calculate_rotation( float current, float desired );
 
   bool transformTwist(Eigen::Vector3f &twist_in, Eigen::Vector3f &twist_out);
+  bool scaleTrajectory(geometry_msgs::Twist &twist);
+  bool validateTrajectory(geometry_msgs::Twist &twist);
+  bool generateTrajectoryToGoal(geometry_msgs::Twist &twist, int &local_plan_index);
 
 };
 
